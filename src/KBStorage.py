@@ -1,7 +1,7 @@
 from pythreader import Primitive, synchronized
 import uuid, secrets, glob, os
 from hashlib import sha1
-from KBFile import KBFile, FileSizeLimitExceeded
+from .KBFile import KBFile, FileSizeLimitExceeded
 
 def random_id(n=8):
     return secrets.token_hex(n)
