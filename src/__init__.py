@@ -1,2 +1,2 @@
 from .KBFile import KBFile
-from .KBStorage import KBStorage 
+from .KBStorage import KBStorage, KBCachedStorage 
