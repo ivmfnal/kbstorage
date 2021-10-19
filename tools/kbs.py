@@ -20,7 +20,7 @@ if __name__ == "__main__":
     if command == "get":
         key = args[0]
         blob = storage[key]
-        sys.stdout.write(blob)
+        sys.stdout.write(blob.decode("utf-8"))
     
     elif command == "put":
         key, path = args
