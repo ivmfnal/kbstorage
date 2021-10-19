@@ -292,7 +292,6 @@ class KBFile(object):
             return 0
         shift = 0
         end = entries[0][0]
-        for offset, size, _ in entries:
             
         
 
