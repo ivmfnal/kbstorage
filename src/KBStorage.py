@@ -113,6 +113,7 @@ class LRUCache(Primitive):
             blob = self.DataSource[key]
             self.Cache[key] = blob
         self.bump_key_and_clean_up(key)
+        return blob
         
     @synchronized
     def __setitem__(self, key, blob):
