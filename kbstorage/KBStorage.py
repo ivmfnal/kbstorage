@@ -2,16 +2,8 @@ from pythreader import Primitive, synchronized
 import uuid, secrets, glob, os
 from hashlib import sha1
 from .KBFile import KBFile, FileSizeLimitExceeded
+from .util import random_id, key_hash, to_str, to_bytes
 
-def random_id(n=8):
-    return secrets.token_hex(n)
-    
-def key_hash(key, modulo, level=0):
-    if isinstance(key, str):
-        key = key.encode("utf-8")
-    h = int.from_bytes(sha1(key))
-    return (h >> level) % modulo
-    
 class KBStorage(Primitive):
     
     def __init__(self, root_path, lock=None):
@@ -20,19 +12,20 @@ class KBStorage(Primitive):
         self.Files = {}     # name -> KBFile
         self.KeyMap = {}    # key -> file name
         self.CurrentFile = None     # file new entries are written to
-        self.Cache = {}         # key -> blob
-        self.CacheKeys = []     # keys sorted by access time
         self.load_files()
     
     def name_to_dir(self, name):
         x = name[-1]
         y = name[-2]
         return f"{self.RootPath}/{x}/{y}"
-    
+
     def name_to_path(self, name):
         dir_path = self.name_to_dir(name)
         return f"{dir_path}/{name}.kbf"
         
+    def path_to_name(self, path):
+        return path.rsplit("/", 1)[-1].split(".", 1)[0]
+
     @synchronized
     def load_files(self):
         smallest_file = None
@@ -50,10 +43,17 @@ class KBStorage(Primitive):
         #print("smallest file:", smallest_file.Name, smallest_size)
         if self.CurrentFile is None:
             self.CurrentFile = self.new_file()
-            
+
+    @synchronized
+    def reload(self):
+        self.Files = {}     # name -> KBFile
+        self.KeyMap = {}    # key -> file name
+        self.CurrentFile = None     # file new entries are written to
+        self.load_files()
+
     def keys(self):
         return self.KeyMap.keys()
-        
+
     @synchronized
     def new_file(self):
         name = random_id()
@@ -135,6 +135,20 @@ class LRUCache(Primitive):
     def meta(self, key):
         return self.DataSource.meta(key)
 
+    def reload(self):
+        return self.DataSource.reload()
+
+    def blobs(self, keys):
+        uncached = []
+        # send already cached blobs first so that new ones do not preempt them
+        for k in keys:
+            if k in self.Cache:
+                yield k, self[k]
+            else:
+                uncached.append(k)
+        for k in uncached:
+            yield k, self[k]
+        
 class KBCachedStorage(LRUCache):
     
     def __init__(self, root_path, cache_capacity=1000):

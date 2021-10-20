@@ -1,5 +1,7 @@
 import struct, json
 
+from .util import to_str, to_bytes
+
 BYTE_ORDER = '!'
 Version = "1.0"
 
@@ -234,8 +236,8 @@ class KBFile(object):
         self.Directory[key] = (offset, len(blob))
 
     def add_blob(self, key, blob):
-        if isinstance(key, str):
-            key = key.encode("utf-8")
+        key = to_bytes(key)
+        blob = to_bytes(blob)
         l = len(blob)
         if not self.Directory:
             self.read_directory()
@@ -255,8 +257,7 @@ class KBFile(object):
     __setitem__ = add_blob
     
     def get_blob(self, key):
-        if isinstance(key, str):
-            key = key.encode("utf-8")
+        key = to_bytes(key)
         offset, size = self.Directory[key]
         self.F.seek(offset)
         blob = self.F.read(size)
@@ -265,8 +266,7 @@ class KBFile(object):
     __getitem__ = get_blob
     
     def blob_size(self, key):
-        if isinstance(key, str):
-            key = key.encode("utf-8")
+        key = to_bytes(key)
         offset, size = self.Directory[key]
         return size
         
@@ -281,8 +281,7 @@ class KBFile(object):
             yield k, self[k]
 
     def __delitem__(self, key):
-        if isinstance(key, str):
-            key = key.encode("utf-8")
+        key = to_bytes(key)
         del self.Directory[key]
         self.write_directory(self.DirectoryOffset)
         
@@ -292,8 +291,6 @@ class KBFile(object):
             return 0
         shift = 0
         end = entries[0][0]
-            
-        
 
     def compact(self):
         blobs = sorted([(offset, size, key) for key, (offset, size) in self.Directory.items()])
