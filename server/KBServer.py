@@ -2,6 +2,7 @@ from webpie import WPApp, WPHandler
 from kbstorage import KBCachedStorage, to_bytes
 import sys, re, zlib
 from urllib.parse import unquote
+from rfc2617 import digest_server
 
 class Handler(WPHandler):
     
@@ -39,12 +40,18 @@ class Handler(WPHandler):
             content_type = "application/zip"
             blob = zlib.compress(blob)
         return blob, 200, content_type, {"Content-Length":len(blob)}
+        
+    Realm = "kbstorage"
 
     def put(self, request, relpath, key=None, **args):
-        key = to_bytes(key or relpath) or None
-        blob = to_bytes(request.body)
-        key = self.App.DB.add_blob(key, blob)
-        return key
+        ok, header = digest_server(self.Realm, request.environ, self.App.get_password)
+        if ok:
+            key = to_bytes(key or relpath) or None
+            blob = to_bytes(request.body)
+            key = self.App.DB.add_blob(key, blob)
+            return key
+        elif header:
+            return "Authorization required", 401, {'WWW-Authenticate': header}
 
     def blob(self, request, relpath, **args):
         if request.method.lower() == "get":
