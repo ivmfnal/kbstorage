@@ -75,6 +75,7 @@ class KBStorage(Primitive):
             self.CurrentFile = f = self.new_file()
             f[key] = blob
         self.KeyMap[key] = self.CurrentFile.Name
+        return key
 
     def __setitem__(self, key, blob):
         assert key is not None
