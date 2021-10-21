@@ -41,7 +41,7 @@ class Handler(WPHandler):
         return blob, 200, content_type, {"Content-Length":len(blob)}
 
     def put(self, request, relpath, key=None, **args):
-        key = to_bytes(key or relpath)
+        key = to_bytes(key or relpath) or None
         blob = to_bytes(request.body)
         key = self.App.DB.add_blob(key, blob)
         return key
