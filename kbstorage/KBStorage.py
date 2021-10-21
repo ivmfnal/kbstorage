@@ -2,7 +2,7 @@ from pythreader import Primitive, synchronized
 import uuid, secrets, glob, os
 from hashlib import sha1
 from .KBFile import KBFile, FileSizeLimitExceeded
-from .util import random_id, key_hash, to_str, to_bytes
+from .util import random_key, key_hash, to_str, to_bytes
 
 class KBStorage(Primitive):
     
@@ -70,13 +70,15 @@ class KBStorage(Primitive):
             self.CurrentFile = self.new_file()
         f = self.CurrentFile
         try:
-            f[key] = blob
+            key = f.add_blob(key, blob)
         except FileSizeLimitExceeded:
             self.CurrentFile = f = self.new_file()
             f[key] = blob
         self.KeyMap[key] = self.CurrentFile.Name
 
-    __setitem__ = add_blob
+    def __setitem__(self, key, blob):
+        assert key is not None
+        return self.add_blob(key, blob)
         
     @synchronized
     def get_blob(self, key):
@@ -116,10 +118,15 @@ class LRUCache(Primitive):
         return blob
         
     @synchronized
-    def __setitem__(self, key, blob):
+    def add_blob(self, key, blob):
+        key = self.DataSource.add_blob(key, blob)
         self.Cache[key] = blob
-        self.DataSource[key] = blob
         self.bump_key_and_clean_up(key)
+        return key
+
+    def __setitem__(self, key, blob):
+        assert key is not None
+        return self.add_blob(key, blob)
 
     def bump_key_and_clean_up(self, key):
         try:    self.CacheKeys.remove(key)

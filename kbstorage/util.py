@@ -1,6 +1,6 @@
 import secrets
 
-def random_id(n=8):
+def random_key(n=8):
     return secrets.token_hex(n)
     
 def key_hash(key, modulo, level=0):

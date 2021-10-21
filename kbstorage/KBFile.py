@@ -1,6 +1,6 @@
 import struct, json
 
-from .util import to_str, to_bytes
+from .util import to_str, to_bytes, random_key
 
 BYTE_ORDER = '!'
 Version = "1.0"
@@ -236,6 +236,10 @@ class KBFile(object):
         self.Directory[key] = (offset, len(blob))
 
     def add_blob(self, key, blob):
+        if key is None:
+            key = random_key()
+            while key in self.Directory:
+                key = random_key()
         key = to_bytes(key)
         blob = to_bytes(blob)
         l = len(blob)
@@ -253,6 +257,7 @@ class KBFile(object):
             self.write_directory(dir_offset)
             self.write_header()
         self.append_blob(key, blob, self.FreeSpace)
+        return key
         
     __setitem__ = add_blob
     

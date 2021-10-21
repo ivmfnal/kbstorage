@@ -43,8 +43,8 @@ class Handler(WPHandler):
     def put(self, request, relpath, key=None, **args):
         key = to_bytes(key or relpath)
         blob = to_bytes(request.body)
-        self.App.DB[key] = blob
-        return "OK"
+        key = self.App.DB.add_blob(key, blob)
+        return key
 
     def blob(self, request, relpath, **args):
         if request.method.lower() == "get":
