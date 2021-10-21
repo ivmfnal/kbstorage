@@ -81,7 +81,8 @@ class Handler(WPHandler):
         if keys:
             keys = keys.split(",")
         elif request.headers["Content-Type"] == "text/csv":
-            keys = [k.strip() for k in request.body.split("\n")]
+            keys = [k.strip() for k in request.body.split(b"\n")]
+            keys = [k for k in keys if k]
         else:
             keys = json.load(request.body_file)
         compress = compress == "yes"

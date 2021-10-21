@@ -147,6 +147,10 @@ class LRUCache(Primitive):
             else:
                 uncached.append(k)
         for k in uncached:
+            try:
+                blob = self[k]
+            except KeyError:
+                continue
             yield k, self[k]
         
 class KBCachedStorage(LRUCache):
