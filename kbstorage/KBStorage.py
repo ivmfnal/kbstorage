@@ -56,7 +56,7 @@ class KBStorage(Primitive):
 
     @synchronized
     def new_file(self):
-        name = random_id()
+        name = random_key()
         while name in self.Files:
             name = random_id()
         path = self.name_to_path(name)

@@ -44,14 +44,16 @@ class Handler(WPHandler):
     Realm = "kbstorage"
 
     def put(self, request, relpath, key=None, **args):
-        ok, header = digest_server(self.Realm, request.environ, self.App.get_password)
+        ok, auth_header = digest_server(self.Realm, request.environ, self.App.get_password)
         if ok:
             key = to_bytes(key or relpath) or None
             blob = to_bytes(request.body)
             key = self.App.DB.add_blob(key, blob)
             return key
-        elif header:
-            return "Authorization required", 401, {'WWW-Authenticate': header}
+        elif auth_header:
+            return "Authorization required", 401, {'WWW-Authenticate': auth_header}
+        else:
+            return 403
 
     def blob(self, request, relpath, **args):
         if request.method.lower() == "get":
@@ -114,17 +116,26 @@ class Handler(WPHandler):
 
 class App(WPApp):
     
-    def __init__(self, storage_path):
+    def __init__(self, config):
         WPApp.__init__(self, Handler)
+        self.Users = config["users"]
+        storage_path = config["storage"]
         self.DB = KBCachedStorage(storage_path)
+        
+    def get_password(self, realm, username):
+        return self.Users.get(username)
 
 if __name__ == "__main__":
-    import getopt, sys
+    import getopt, sys, yaml, os
     
-    opts, args = getopt.getopt(sys.argv[1:], "p:s:")
+    opts, args = getopt.getopt(sys.argv[1:], "p:s:c:")
     opts = dict(opts)
-    port = int(opts.get("-p", 8888))
-    storage = opts["-s"]
+    config = opts.get("-c", os.environ.get("KBSERVER_CFG"))
+    if not config:
+        print("Configuration must be specified either with -c or KBSERVER_CFG environment variable")
+        sys.exit(2)
+    config = yaml.load(open(config, "r"), Loader=yaml.SafeLoader)
     
+    port = int(opts.get("-p", config.get("port", 8888)))
     print("Starting on port", port)
-    App(storage).run_server(port)
+    App(config).run_server(port)
