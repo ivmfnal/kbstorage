@@ -11,27 +11,35 @@ class FileSizeLimitExceeded(Exception):
 class KBFile(object):
     
     PAGE_SIZE = 8*1024
-    FORMAT_VERSION = (1,0)
+    SIZE_BYTES = 8              # length of size and offset fields in bytes: max file size, max blob size ~ 2**64 = 1.8e19
+    KEY_SIZE_BYTES = 2                # length of key size field in bytes: max key size = 2**(8*2) = 65536
+    HEADER_SIZE = 1024
+    FORMAT_VERSION = (2,0)
     ZERO_PAGE = b'\0' * PAGE_SIZE
     SIGNATURE = b"KbF!"
-    MAX_FILE_SIZE = 512*1024*1024       # 0.5GB
+    MAX_FILE_SIZE = 1024*1024*1024       # 1GB
     
     #
     # File format:
+    #   All integers (offsets, sizes) are stored in network (=big endian) format
+    #   offset = 0: 
+    #       Header
+    #           signature = b"KbF!" - 4 bytes
+    #           format version - 2 bytes (major, minor)
+    #           data offset - 8 bytes (=HEADER_SIZE)
+    #           directory offset - 8 bytes (SIZE_BYTES)
     #
-    #    0: Header 1 page (PAGE_SIZE)
-    #       format version - 2 bytes
-    #       data offset - 8 bytes (=PAGE_SIZE)
-    #       directory offset - 8 bytes
-    #    PAGE-SIZE: Data, multiple of PAGE_SIZE
-    #    <directory offset>:
-    #        odrederd by offset
-    #        <lenmask><offset><size><key length>[4]<key>
-    #        ...
+    #   offset = HEADER_SIZE: 
+    #       Data, multiple of PAGE_SIZE
+    #       free space
     #
-    #   lenmask: 4 upper bits: a, 4 lower bits: b
-    #       offset is stored as 2^a unsigned byte integer
-    #       size is stored as 2^b unsigned byte integer
+    #   offset = <directory offset>:
+    #       odrederd by offset arrays of records:
+    #           offset - 8 bytes   (SIZE_BYTES)
+    #           size - 8 bytes     (SIZE_BYTES)
+    #           key length - 2 bytes    (KEY_SIZE_BYTES)
+    #           key - <key length>
+    #           ...
     #
     
     def __init__(self, path, name=None):
@@ -89,11 +97,11 @@ class KBFile(object):
     def next_page_offset(self, n):
         return ((n + self.PAGE_SIZE - 1)//self.PAGE_SIZE)*self.PAGE_SIZE
         
-    def pad_to_page(self, data, padding=b"\0"):
+    def pad(self, data, length, padding=b"\0"):
         n = len(data)
-        to_pad = self.next_page_offset(n)
-        if n < to_pad:
-            data = data + (padding*(to_pad-n))
+        padded_n = ((n+length-1)//length)*length
+        if n < padded_n:
+            data = data + (padding*(padded_n-n))
         return data
 
     def pack_offset_size(self, offset, size):
@@ -115,7 +123,7 @@ class KBFile(object):
         return out
         
     def read_offset_size(self, data):
-        print("unpack_offset_size: data:", bytes(data[:10]).hex())
+        #print("unpack_offset_size: data:", bytes(data[:10]).hex())
         lenmask = int(data[0])
         off_log, size_log = (lenmask >> 4) & 15, lenmask & 15
         off_len = 2**off_log
@@ -125,48 +133,74 @@ class KBFile(object):
         #print("unpack_offset_size: returning:", offset, size, rest)
         return offset, size, 1+off_len+size_len
         
-    def pack_header(self, directory_offset):
-        header = (
-            self.SIGNATURE
-            + struct.pack("!BB", self.FORMAT_VERSION[0], self.FORMAT_VERSION[1]) 
-            + self.PAGE_SIZE.to_bytes(8, "big")     # data offset
-            + directory_offset.to_bytes(8, "big")    # directory offset
-        )
-        return self.pad_to_page(header)
-        
-    def pack_directory_entry(self, key, offset, size):
-        if isinstance(key, str):
-            key = key.encode("utf-8")
-        out = self.pack_offset_size(offset, size) + struct.pack("!L", len(key)) + key
-        #print("pack_directory_entry:", key, offset, size, " -> ", out.hex())
-        return out
-        
-    def pack_directory(self):
-        return b''.join([self.pack_directory_entry(key, offset, size)
-                    for key, (offset, size) in self.Directory.items()
-                ]
-        )
+    #       Header
+    #           signature = b"KbF!" - 4 bytes
+    #           format version - 2 bytes
+    #           data offset - 8 bytes (=HEADER_SIZE)
+    #           directory offset - 8 bytes (SIZE_BYTES)
 
     def write_header(self):
+        header = (
+            self.SIGNATURE
+            + struct.pack("!BBQQ", self.FORMAT_VERSION[0], self.FORMAT_VERSION[1],
+                self.DataOffset, self.DirectoryOffset
+            ) 
+        )
         self.F.seek(0,0)
-        self.F.write(self.pack_header(self.DirectoryOffset))
+        self.F.write(header)
 
     def read_header(self):
         self.F.seek(0,0)
-        header = self.F.read(self.PAGE_SIZE)
-        #print("header:", header)
+        header = self.F.read(self.HEADER_SIZE)
+        header = memoryview(header)
+        
         assert header[:len(self.SIGNATURE)] == self.SIGNATURE, "KB file signature not found: %s" % (repr(header[:len(self.SIGNATURE)]))
-        i = len(self.SIGNATURE)
-        version = header[i:i+2]
-        i += 2
-        self.DataOffset = int.from_bytes(header[i:i+8], "big")
-        i += 8
-        self.DirectoryOffset = int.from_bytes(header[i:i+8], "big")
-        i += 8
-        #print("read_header:")
-        #print("    version:", version)
-        #print("    data offset:", self.DataOffset)
-        #print("    directory offset:", self.DirectoryOffset)
+
+        v1, v0, data_offset, directory_offset = struct.unpack("!BBQQ", header[len(self.SIGNATURE):])
+        assert data_offset == self.HEADER_SIZE
+        self.DataOffset = data_offset
+        self.DirectoryOffset = directory_offset
+
+    
+    #   offset = <directory offset>:
+    #       odrederd by offset arrays of records:
+    #           offset - 8 bytes   (SIZE_BYTES)
+    #           size - 8 bytes     (SIZE_BYTES)
+    #           key length - 2 bytes    (KEY_SIZE_BYTES)
+    #           key - <key length>
+    #           ...
+
+    def pack_directory_entry(self, key, offset, size):
+        if isinstance(key, str):
+            key = key.encode("utf-8")
+        return struct.pack("!QQH", offset, size, len(key)) + key
+        
+    def write_directory(self, offset):
+        self.F.seek(offset, 0)
+        for key, (offset, size) in self.Directory.items():
+            self.F.write(self.pack_directory_entry(key, offset, size))
+        self.F.truncate()
+
+    def unpack_directory_entry(self, data):
+        offset, size, key_length = struct.unpack("!QQH", data)
+        key_start = self.SIZE_BYTES + self.SIZE_BYTES + self.KEY_SIZE_BYTES
+        key = data[key_start:key_start+key_length]
+        return offset, size, bytes(key), key_start+key_length
+            
+    def read_directory(self):
+        self.F.seek(self.directory_offset, 0)
+        data = self.F.read()    # through the end of file
+        i = 0
+        n = len(data)
+        #print(f"read_directory: dir data ({n}):", data[:20].hex(), data[:20])
+        self.Directory = {}
+        view = memoryview(data)
+        l = len(view)
+        while i < l:
+            offset, size, key, consumed = self.unpack_directory_entry(view[i:])
+            self.Directory[key] = (offset, size)
+            self.FreeSpace = max(self.FreeSpace, offset+size)            
+            i += consumed
 
     @property
     def data_offset(self):
@@ -184,46 +218,6 @@ class KBFile(object):
             self.read_header()
         return self.DirectoryOffset
 
-    def read_directory_entry(self, data):
-        #        <lenmask><offset><size><key length>[4]<key>
-        lenmask = int(data[0])
-        #print("read_directory_entry: lenmask: %x" % (lenmask,))
-        off_log, size_log = (lenmask >> 4) & 15, lenmask & 15
-        off_len = 2**off_log
-        size_len = 2**size_log
-        #print("read_directory_entry: off_len, size_len:", off_log, size_log)
-        offset = int.from_bytes(data[1:1+off_len], "big")
-        size = int.from_bytes(data[1+off_len:1+off_len+size_len], "big")
-        #print("    offset, size:", offset, size)
-        i = 1+off_len+size_len
-        (keylen,) = struct.unpack_from("!L", data, i)
-        #print("    keylen:", keylen)
-        i += 4
-        key = data[i:i+keylen]
-        return offset, size, key, i+keylen
-            
-    def read_directory(self):
-        self.F.seek(self.directory_offset, 0)
-        data = self.F.read()
-        i = 0
-        n = len(data)
-        #print(f"read_directory: dir data ({n}):", data[:20].hex(), data[:20])
-        self.Directory = {}
-        view = memoryview(data)
-        l = len(view)
-        while i < l:
-            offset, size, key, consumed = self.read_directory_entry(view[i:])
-            key = bytes(key)
-            self.Directory[key] = (offset, size)
-            self.FreeSpace = max(self.FreeSpace, offset+size)            
-            #print("    key:", key)
-            i += consumed
-            
-    def write_directory(self, offset):
-        self.F.seek(offset, 0)
-        self.F.write(self.pack_directory())
-        self.F.truncate()
-            
     def append_blob(self, key, blob, offset):
         # assume there is enough room to store the blob at given offset
         #print(f"append_blob({key}) at {offset}")
