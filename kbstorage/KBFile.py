@@ -239,18 +239,36 @@ class KBFile(object):
         l = len(blob)
         if not self.Directory:
             self.read_directory()
-        free_space = self.DirectoryOffset - self.FreeSpace
-        dir_offset = self.DirectoryOffset
-        while free_space < len(blob):
-            dir_offset += self.PAGE_SIZE
-            free_space += self.PAGE_SIZE
-        if dir_offset > self.MAX_FILE_SIZE:
-            raise FileSizeLimitExceeded()
-        if dir_offset > self.DirectoryOffset:
-            self.DirectoryOffset = dir_offset
-            self.write_directory(dir_offset)
-            self.write_header()
-        self.append_blob(key, blob, self.FreeSpace)
+            
+        #
+        # Try to squeeze the new blob between existing ones
+        #
+        
+        blob_map = sorted(self.Directory.values())          # sorted by offset
+        n = len(blob_map)
+        last_i = n-1
+        store_at = None
+        for i, (offset, size) in enumerate(blob_map):
+            if i < last_i:
+                o1, s1 = blob_map[i+1]
+                if o1 >= offset + size + l:
+                    store_at = offset + size
+                    break
+        else:
+            # append the blob to the end of data space, allocate more space if necessary, in page increments
+            free_space = self.DirectoryOffset - self.FreeSpace
+            dir_offset = self.DirectoryOffset
+            while free_space < len(blob):
+                dir_offset += self.PAGE_SIZE
+                free_space += self.PAGE_SIZE
+            if dir_offset > self.MAX_FILE_SIZE:
+                raise FileSizeLimitExceeded()
+            if dir_offset > self.DirectoryOffset:
+                self.DirectoryOffset = dir_offset
+                self.write_directory(dir_offset)
+                self.write_header()
+            store_at = self.FreeSpace
+        self.append_blob(key, blob, store_at)
         return key
         
     __setitem__ = add_blob
