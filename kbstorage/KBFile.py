@@ -13,10 +13,10 @@ class KBFile(object):
     PAGE_SIZE = 8*1024
     SIZE_BYTES = 8              # length of size and offset fields in bytes: max file size, max blob size ~ 2**64 = 1.8e19
     KEY_SIZE_BYTES = 2                # length of key size field in bytes: max key size = 2**(8*2) = 65536
-    HEADER_SIZE = 1024
+    SIGNATURE = b"KbF!"
+    HEADER_SIZE = len(SIGNATURE) + 2 + 2*SIZE_BYTES     # signature + version + data_offset + directory_offset
     FORMAT_VERSION = (2,0)
     ZERO_PAGE = b'\0' * PAGE_SIZE
-    SIGNATURE = b"KbF!"
     MAX_FILE_SIZE = 1024*1024*1024       # 1GB
     
     #
@@ -60,12 +60,10 @@ class KBFile(object):
         
     def _init(self):
         self.F = open(self.Path, "w+b")
-        self.FreeSpace = self.DataOffset = self.PAGE_SIZE
-        self.DirectoryOffset = directory_offset = self.PAGE_SIZE * 2
+        self.FreeSpace = self.DataOffset = self.HEADER_SIZE
+        self.DirectoryOffset = directory_offset = self.FreeSpace + self.PAGE_SIZE
         self.write_header()
-        self.F.seek(self.DataOffset)
-        self.F.write(self.ZERO_PAGE)    # data
-        self.F.truncate()
+        self.write_directory()
         self.FileSize = self.F.tell()
         
     @staticmethod
@@ -156,7 +154,9 @@ class KBFile(object):
         
         assert header[:len(self.SIGNATURE)] == self.SIGNATURE, "KB file signature not found: %s" % (repr(header[:len(self.SIGNATURE)]))
 
+        #print(len(header[len(self.SIGNATURE):]))
         v1, v0, data_offset, directory_offset = struct.unpack("!BBQQ", header[len(self.SIGNATURE):])
+        #print("header: version:", v0, v1, "  data_offset:", data_offset, "  directory_offset:", directory_offset)
         assert data_offset == self.HEADER_SIZE
         self.DataOffset = data_offset
         self.DirectoryOffset = directory_offset
@@ -175,15 +175,17 @@ class KBFile(object):
             key = key.encode("utf-8")
         return struct.pack("!QQH", offset, size, len(key)) + key
         
-    def write_directory(self, offset):
+    def write_directory(self):
+        offset = self.DirectoryOffset
         self.F.seek(offset, 0)
         for key, (offset, size) in self.Directory.items():
             self.F.write(self.pack_directory_entry(key, offset, size))
         self.F.truncate()
 
     def unpack_directory_entry(self, data):
-        offset, size, key_length = struct.unpack("!QQH", data)
+        #print("unpack_directory_entry: data:", len(data))
         key_start = self.SIZE_BYTES + self.SIZE_BYTES + self.KEY_SIZE_BYTES
+        offset, size, key_length = struct.unpack("!QQH", data[:key_start])
         key = data[key_start:key_start+key_length]
         return offset, size, bytes(key), key_start+key_length
             
@@ -265,7 +267,7 @@ class KBFile(object):
                 raise FileSizeLimitExceeded()
             if dir_offset > self.DirectoryOffset:
                 self.DirectoryOffset = dir_offset
-                self.write_directory(dir_offset)
+                self.write_directory()
                 self.write_header()
             store_at = self.FreeSpace
         self.append_blob(key, blob, store_at)
@@ -300,7 +302,10 @@ class KBFile(object):
     def __delitem__(self, key):
         key = to_bytes(key)
         del self.Directory[key]
-        self.write_directory(self.DirectoryOffset)
+        self.write_directory()
+        
+    def directory(self):
+        return sorted([(k, o, s) for k, (o, s) in self.Directory.items()], key=lambda x: x[1])
         
     def compactable(self):
         entries = sorted([(offset, size, key) for key, (offset, size) in self.Directory.items()])
@@ -324,33 +329,8 @@ class KBFile(object):
         self.DirectoryOffset = self.next_page_offset(write_off)
         self.write_header()
         self.Directory = new_directory
-        self.write_directory(self.DirectoryOffset)
+        self.write_directory()
 
-if __name__ == "__main__":
-    import sys
-    
-    command = sys.argv[1]
-    args = sys.argv[2:]
-    if command == "get":
-        path, key = args
-        f = KBFile.open(path)
-        sys.stdout.write(f[key].decode("utf-8"))
-    elif command == "put":
-        path, key, infile = args
-        data = open(infile, "rb").read()
-        f = KBFile.open(path)
-        f[key] = data
-    elif command == "create":
-        path = args[0]
-        f = KBFile.create(path)
-    elif command == "ls":
-        path = args[0]
-        f = KBFile.open(path)
-        for k in f.keys():
-            if isinstance(k, bytes):
-                k = k.decode("utf-8")
-            print("%-40s %s" % (k, f.blob_size(k))) 
-        
         
     
     
