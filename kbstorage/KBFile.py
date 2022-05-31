@@ -15,7 +15,7 @@ class KBFile(object):
     KEY_SIZE_BYTES = 2                # length of key size field in bytes: max key size = 2**(8*2) = 65536
     SIGNATURE = b"KbF!"
     HEADER_SIZE = len(SIGNATURE) + 2 + 2*SIZE_BYTES     # signature + version + data_offset + directory_offset
-    FORMAT_VERSION = (2,0)
+    FORMAT_VERSION = (3,0)
     ZERO_PAGE = b'\0' * PAGE_SIZE
     MAX_FILE_SIZE = 1024*1024*1024       # 1GB
     
@@ -50,7 +50,7 @@ class KBFile(object):
         self.Name = name or path.rsplit("/",1)[-1].split(".", 1)[0]
         self.Path = path
         self.F = None
-        self.Directory = {}         # key -> (offset, size)
+        self.Directory = {}         # key -> (offset, size, flags)
         self.DataOffset = self.DirectoryOffset = None
         self.FreeSpace = None
         self.FileSize = None
@@ -90,46 +90,8 @@ class KBFile(object):
         self.F.close()
         self.Directory = self.DataOffset = self.DirectoryOffset = self.FreeSpace = None
 
-    def log8(self, x):
-        l = 0
-        u = 256
-        while x > u:
-            l += 1
-            u *= 256
-        #print("log8:", x, "->", l)
-        return l
-        
     def next_page_offset(self, n):
         return ((n + self.PAGE_SIZE - 1)//self.PAGE_SIZE)*self.PAGE_SIZE
-        
-    def pack_offset_size(self, offset, size):
-        off_log = self.log8(offset)
-        size_log = self.log8(size)
-        print("pack_offset_size: offset, size:", offset, size, "   off_log, size_log:", off_log, size_log)
-        assert off_log < 16 and size_log < 16        
-        lenmask = (off_log << 4) + size_log
-        off_len = 2**off_log
-        size_len = 2**size_log
-        parts = (
-            struct.pack("!B", lenmask),
-            offset.to_bytes(off_len, "big"),
-            size.to_bytes(size_len, "big")
-            )
-        print("   parts:", *(p.hex() for p in parts))
-        out = b''.join(parts)
-        print("   out:", out.hex())
-        return out
-        
-    def read_offset_size(self, data):
-        #print("unpack_offset_size: data:", bytes(data[:10]).hex())
-        lenmask = int(data[0])
-        off_log, size_log = (lenmask >> 4) & 15, lenmask & 15
-        off_len = 2**off_log
-        size_len = 2**size_log
-        offset = int.from_bytes(data[1:1+off_len], "big")
-        size = int.from_bytes(data[1+off_len:1+off_len+size_len], "big")
-        #print("unpack_offset_size: returning:", offset, size, rest)
-        return offset, size, 1+off_len+size_len
         
     #       Header
     #           signature = b"KbF!" - 4 bytes
@@ -179,40 +141,45 @@ class KBFile(object):
             self.F.write(self.pack_directory_entry(key, offset, size))
         self.F.truncate()
 
-    def pack_directory_entry(self, key, offset, size):
+    def ___pack_directory_entry(self, key, offset, size):
         #print("pack_directory_entry:", key, offset, size)
         if isinstance(key, str):
             key = key.encode("utf-8")
         return struct.pack("!QQH", offset, size, len(key)) + key
         
-    def unpack_directory_entry(self, data):
+    def ___unpack_directory_entry(self, data):
         #print("unpack_directory_entry: data:", len(data))
         key_start = self.SIZE_BYTES + self.SIZE_BYTES + self.KEY_SIZE_BYTES
         offset, size, key_length = struct.unpack("!QQH", data[:key_start])
         key = data[key_start:key_start+key_length]
         return offset, size, bytes(key), key_start+key_length
         
-    def pack_directory_entry(self, key, offset, data_size):
+    def pack256(self, x):
+        assert x >= 0
+        m = 0
+        u = 256
+        nbytes = 1
+        while x >= u:
+            m += 1
+            u *= u
+            nbytes *= 2
+        return m, x.to_bytes(nbytes, "big")
+        
+    def pack_directory_entry(self, flags, key, offset, data_size):
+        assert flags < 256 and flags >= 0
         key_size = len(key)
-        key_size_log = self.log8(key_size)
-        offset_log = self.log8(offset)
-        data_size_log = self.log8(data_size)
+        key_size_log, key_size_bytes = self.pack256(key_size)
+        offset_log, offset_bytes = self.pack256(offset)
+        data_size_log, data_size_bytes = self.pack256(data_size)
 
-        assert key_size_log < 4
-        assert offset_log < 8
-        assert data_size_log < 8
+        assert key_size_log < 4             # 2 bit
+        assert offset_log < 8               # 3 bit
+        assert data_size_log < 8            # 3 bit
 
-        lenmask = (offset_log << 6) + (data_size_log << 2) + key_size_log
-        off_len = 2**offset_log
-        size_len = 2**data_size_log
-        key_len = 2**key_size_log
-        
-        
-        out = lenmask.to_bytes(1, "big") \
-            + offset.to_bytes(off_len, "big") \
-            + data_size.to_bytes(size_len, "big") \
-            + key_size.to_bytes(key_len, "big") \
-            + to_bytes(key)    
+        lenmask = (offset_log << 5) + (data_size_log << 2) + key_size_log
+        assert lenmask < 256
+
+        out = bytes([flags, lenmask]) + offset_bytes + data_size_bytes + key_size_bytes + bytes(key)
 
         print("pack_directory_entry: out:", out.hex(), repr(out))
         return out
@@ -220,7 +187,8 @@ class KBFile(object):
     def unpack_directory_entry(self, data):
         #print("unpack_directory_entry: data:", len(data))
         data = memoryview(data)
-        mask = data[0]
+        flags = data[0]
+        mask = data[1]
         key_size_log = mask & 3
         data_size_log = (mask >> 2) & 7
         offset_log = (mask >> 5) & 7
@@ -229,7 +197,7 @@ class KBFile(object):
         data_size_len = 2**data_size_log
         offset_len = 2**offset_log
         
-        i = 1
+        i = 2
         offset = int.from_bytes(data[i:i+offset_len], "big")
         i += offset_len
         data_size = int.from_bytes(data[i:i+data_size_len], "big")
@@ -238,8 +206,7 @@ class KBFile(object):
         i += key_size_len
         key = bytes(data[i:i+key_size])
         i += key_size        
-        return offset, data_size, bytes(key), i
-
+        return flags, offset, data_size, bytes(key), i
 
     def read_directory(self):
         self.F.seek(self.directory_offset, 0)
@@ -252,8 +219,8 @@ class KBFile(object):
         l = len(view)
         self.FreeSpace = self.DataOffset        
         while i < l:
-            offset, size, key, consumed = self.unpack_directory_entry(view[i:])
-            self.Directory[key] = (offset, size)
+            flags, offset, size, key, consumed = self.unpack_directory_entry(view[i:])
+            self.Directory[key] = (offset, size, flags)
             #print("data", key, "end:", offset+size)
             self.FreeSpace = max(self.FreeSpace, offset+size)            
             i += consumed
@@ -274,16 +241,16 @@ class KBFile(object):
             self.read_header()
         return self.DirectoryOffset
 
-    def append_blob(self, key, blob, offset):
+    def append_blob(self, key, blob, offset, flags=0):
         # assume there is enough room to store the blob at given offset
         #print(f"append_blob({key}) at {offset}")
         self.F.seek(offset, 0)
         self.F.write(blob)
         self.FreeSpace = self.F.tell()
         self.F.seek(0, 2)
-        self.F.write(self.pack_directory_entry(key, offset, len(blob)))
+        self.F.write(self.pack_directory_entry(flags, key, offset, len(blob)))
         self.F.truncate()
-        self.Directory[key] = (offset, len(blob))
+        self.Directory[key] = (offset, len(blob), flags)
 
     def add_blob(self, key, blob):
         if len(key) > self.MAX_KEY_SIZE:
@@ -318,7 +285,7 @@ class KBFile(object):
         n = len(blob_map)
         last_i = n-1
         store_at = self.FreeSpace
-        for i, (offset, size) in enumerate(blob_map):
+        for i, (offset, size, flags) in enumerate(blob_map):
             if i < last_i:
                 o1, s1 = blob_map[i+1]
                 #print("gap:", o1 - offset - size)
@@ -349,7 +316,7 @@ class KBFile(object):
     
     def get_blob(self, key):
         key = to_bytes(key)
-        offset, size = self.Directory[key]
+        offset, size, flags = self.Directory[key]
         self.F.seek(offset)
         blob = self.F.read(size)
         return blob
@@ -361,11 +328,17 @@ class KBFile(object):
     
     def blob_size(self, key):
         key = to_bytes(key)
-        offset, size = self.Directory[key]
+        offset, size, flags = self.Directory[key]
         return size
         
+    def blob_flags(self, key):
+        key = to_bytes(key)
+        offset, size, flags = self.Directory[key]
+        return flags
+        
     def meta(self, key):
-        return {"size":self.blob_size(key)}
+        offset, size, flags = self.Directory[key]
+        return {"size":size, "flags":flags}
     
     def keys(self):
         return self.Directory.keys()
@@ -384,26 +357,26 @@ class KBFile(object):
         self.write_directory()
         
     def directory(self):
-        return sorted([(k, o, s) for k, (o, s) in self.Directory.items()], key=lambda x: x[1])
+        return sorted([(k, o, s) for k, (o, s, _) in self.Directory.items()], key=lambda x: x[1])
         
     def compactable(self):
-        entries = sorted([(offset, size, key) for key, (offset, size) in self.Directory.items()])
+        entries = sorted([(offset, size, key) for key, (offset, size, _) in self.Directory.items()])
         if not entries:
             return 0
         shift = 0
         end = entries[0][0]
 
     def compact(self):
-        blobs = sorted([(offset, size, key) for key, (offset, size) in self.Directory.items()])
+        blobs = sorted([(offset, size, key, flags) for key, (offset, size, flags) in self.Directory.items()])
         new_directory = {}
         write_off = self.DataOffset
-        for offset, size, key in blobs:
+        for offset, size, key, flags in blobs:
             if offset > write_off:
                 self.F.seek(offset, 0)
                 blob = self.F.read(size)
                 self.F.seek(write_off, 0)
                 self.F.write(blob)
-            new_directory[key] = (write_off, size)
+            new_directory[key] = (write_off, size, flags)
             write_off += size
         self.DirectoryOffset = self.next_page_offset(write_off)
         self.write_header()
