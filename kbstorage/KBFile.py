@@ -50,11 +50,12 @@ class KBFile(object):
         self.DataOffset = self.DirectoryOffset = None
         self.FreeSpace = None
         self.FileSize = None
+        self.Version = self.Signature = None
         
     def _open(self):
         self.F = open(self.Path, "r+b")
         self.Name = self.Path.rsplit("/",1)[-1].split(".", 1)[0]
-        self.FreeSpace = self.PAGE_SIZE
+        self.FreeSpace = self.DataOffset = self.HEADER_SIZE
         self.read_directory()
         self.FileSize = self.F.tell()
         
@@ -65,6 +66,8 @@ class KBFile(object):
         self.write_header()
         self.write_directory()
         self.FileSize = self.F.tell()
+        self.Version = self.FORMAT_VERSION
+        self.Signature = self.SIGNATURE
         
     @staticmethod
     def open(path):
@@ -138,6 +141,7 @@ class KBFile(object):
     #           directory offset - 8 bytes (SIZE_BYTES)
 
     def write_header(self):
+        #print("write_header: data offset:", self.DataOffset,"  directory offset:", self.DirectoryOffset)
         header = (
             self.SIGNATURE
             + struct.pack("!BBQQ", self.FORMAT_VERSION[0], self.FORMAT_VERSION[1],
@@ -156,12 +160,13 @@ class KBFile(object):
 
         #print(len(header[len(self.SIGNATURE):]))
         v1, v0, data_offset, directory_offset = struct.unpack("!BBQQ", header[len(self.SIGNATURE):])
+        self.Version = (v1, v0)
+        self.Signature = self.SIGNATURE
         #print("header: version:", v0, v1, "  data_offset:", data_offset, "  directory_offset:", directory_offset)
         assert data_offset == self.HEADER_SIZE
         self.DataOffset = data_offset
         self.DirectoryOffset = directory_offset
 
-    
     #   offset = <directory offset>:
     #       odrederd by offset arrays of records:
     #           offset - 8 bytes   (SIZE_BYTES)
@@ -171,6 +176,7 @@ class KBFile(object):
     #           ...
 
     def pack_directory_entry(self, key, offset, size):
+        #print("pack_directory_entry:", key, offset, size)
         if isinstance(key, str):
             key = key.encode("utf-8")
         return struct.pack("!QQH", offset, size, len(key)) + key
@@ -198,9 +204,11 @@ class KBFile(object):
         self.Directory = {}
         view = memoryview(data)
         l = len(view)
+        self.FreeSpace = self.DataOffset        
         while i < l:
             offset, size, key, consumed = self.unpack_directory_entry(view[i:])
             self.Directory[key] = (offset, size)
+            #print("data", key, "end:", offset+size)
             self.FreeSpace = max(self.FreeSpace, offset+size)            
             i += consumed
 
@@ -232,11 +240,16 @@ class KBFile(object):
         self.Directory[key] = (offset, len(blob))
 
     def add_blob(self, key, blob):
+        #print("add_blob: free space:", self.FreeSpace)
         if key is None:
             key = random_key()
             while key in self.Directory:
                 key = random_key()
         key = to_bytes(key)
+        
+        if key in self:
+            del self[key]
+        
         blob = to_bytes(blob)
         l = len(blob)
         if not self.Directory:
@@ -247,13 +260,19 @@ class KBFile(object):
         #
         
         blob_map = sorted(self.Directory.values())          # sorted by offset
+        if blob_map:
+            self.FreeSpace = blob_map[-1][0] + blob_map[-1][1]
+        else:
+            self.FreeSpace = self.DataOffset
         n = len(blob_map)
         last_i = n-1
-        store_at = None
+        store_at = self.FreeSpace
         for i, (offset, size) in enumerate(blob_map):
             if i < last_i:
                 o1, s1 = blob_map[i+1]
+                #print("gap:", o1 - offset - size)
                 if o1 >= offset + size + l:
+                    #print("add_blob: gap found")
                     store_at = offset + size
                     break
         else:
@@ -269,7 +288,7 @@ class KBFile(object):
                 self.DirectoryOffset = dir_offset
                 self.write_directory()
                 self.write_header()
-            store_at = self.FreeSpace
+        #print("add_blob: adding at:", store_at)
         self.append_blob(key, blob, store_at)
         return key
         
@@ -284,6 +303,9 @@ class KBFile(object):
         
     __getitem__ = get_blob
     
+    def __contains__(self, key):
+        return key in self.Directory
+    
     def blob_size(self, key):
         key = to_bytes(key)
         offset, size = self.Directory[key]
@@ -294,6 +316,10 @@ class KBFile(object):
     
     def keys(self):
         return self.Directory.keys()
+        
+    def __iter__(self):
+        #return self.Directory.keys()
+        yield from self.Directory.keys()
         
     def items(self):
         for k in self.keys():
