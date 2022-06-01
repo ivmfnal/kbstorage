@@ -3,16 +3,55 @@ import uuid, secrets, glob, os
 from hashlib import sha1
 from .KBFile import KBFile, FileSizeLimitExceeded
 from .util import random_key, key_hash, to_str, to_bytes
+from zlib import adler32
+"""Storage ranks
+0:      single KBF file         0.kbf                                           2 GB
+1:      256 KBF files           00.kbf ... ff.kbf                               512 GB
+2:      256 subdirectories      00 ... ff with 00.kbf ... ff.kbf files in each  128 TB
+...
+"""
 
 class KBStorage(Primitive):
     
-    def __init__(self, root_path, lock=None):
+    def __init__(self, root_path, rank, lock=None):
         Primitive.__init__(self, lock=lock)
         self.RootPath = root_path
-        self.Files = {}     # name -> KBFile
-        self.KeyMap = {}    # key -> file name
-        self.CurrentFile = None     # file new entries are written to
-        self.load_files()
+        self.Rank = rank
+        self.FileCache = {}         # file_path -> KBFile object
+        self.Directories = {}       # file_path -> KBFile directory dictionary
+
+    def file_path(self, key):
+        #
+        # returns relative path to the file where the key should be
+        #
+        if self.Rank == 0:
+            return "0.kbf"
+        h = sha1(key).hexdigest()
+        if self.Rank == 1:
+            return h[:2] + ".kbf"
+        elif self.Rank == 2:
+            return "%s/%s.kbf" % (h[:2], h[2:4])
+        elif self.Rank == 3:
+            return "%s/%s/%s.kbf" % (h[:2], h[2:4], h[4:6])
+        else:
+            raise NotImplementedError("Rank > 3 is not implemented")
+    
+    @staticmethod
+    def open(self, path, lock=None):
+        #
+        # Determine rank
+        #
+        if os.path.isfile(path + "/0.kbf"):
+            rank = 0
+        elif os.path.isfile(path + "00.kbf"):
+            rank = 1
+        elif os.path.isfile(path + "00/00.kbf"):
+            rank = 2
+        else:
+            rank = 3
+        
+        
+        
     
     def name_to_dir(self, name):
         x = name[-1]

@@ -17,7 +17,7 @@ class KBFile(object):
     HEADER_SIZE = len(SIGNATURE) + 2 + 2*SIZE_BYTES     # signature + version + data_offset + directory_offset
     FORMAT_VERSION = (3,0)
     ZERO_PAGE = b'\0' * PAGE_SIZE
-    MAX_FILE_SIZE = 1024*1024*1024       # 1GB
+    MAX_FILE_SIZE = 2*1024*1024*1024       # 2GB
     
     MAX_BLOB_SIZE = 2**(8*8)-1
     MAX_OFFSET = 2**(8*8)-1
